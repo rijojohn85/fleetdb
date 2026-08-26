@@ -1,0 +1,4 @@
+[book]
+title = "Building a Kubernetes Operator with Operator SDK"
+authors = ["Rijo John"]
+language = "en"

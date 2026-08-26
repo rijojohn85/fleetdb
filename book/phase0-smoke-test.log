@@ -1,0 +1,28 @@
+Phase 0 smoke test — operator-sdk + kind + OLM toolchain validation
+=====================================================================
+
+1. Installed operator-sdk v1.42.3 via `brew install operator-sdk`
+2. Deleted pre-existing `kind` and `k3d` (k3s-default) clusters
+3. Created fresh kind cluster: `kind create cluster --name fleetdb`
+4. Installed OLM 0.28.0: `operator-sdk olm install`
+   - CRDs installed: catalogsources, clusterserviceversions, installplans,
+     olmconfigs, operatorconditions, operatorgroups, operators, subscriptions
+   - Deployments rolled out: olm-operator, catalog-operator, packageserver (2 replicas)
+   - CatalogSource `operatorhubio-catalog` created in `olm` namespace
+5. Scaffolded a throwaway "hello-operator" project to smoke-test the full
+   dev loop (scaffold -> build -> deploy -> reconcile):
+   - `operator-sdk init --domain=example.com --repo=github.com/example/hello-operator`
+   - `operator-sdk create api --group=demo --version=v1alpha1 --kind=Hello --resource --controller`
+   - `make manifests`
+   - `make docker-build IMG=hello-operator:smoke-test`
+   - `kind load docker-image hello-operator:smoke-test --name fleetdb`
+   - `make install` (CRD applied)
+   - `make deploy IMG=hello-operator:smoke-test`
+6. Verified:
+   - controller-manager pod reached Running (1/1)
+   - leader election succeeded
+   - controller started watching Hello CRs
+   - applying config/samples/demo_v1alpha1_hello.yaml created hello-sample with no errors
+7. Deleted scratch/hello-operator — served its purpose, not needed going forward.
+
+Result: toolchain confirmed healthy end-to-end before writing any FleetDB code.

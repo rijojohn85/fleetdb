@@ -1,0 +1,10 @@
+# mdBook build output
+book/book/
+
+# Go
+fleetdb/bin/
+*.test
+*.out
+
+# OS
+.DS_Store
