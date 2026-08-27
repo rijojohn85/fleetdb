@@ -65,6 +65,13 @@ for the same package — if your editor can't resolve
 piece; `go build ./...` will also refuse to compile without it, so
 there's no way to silently miss it.
 
+One value in that snippet deserves its own word:
+`Metrics: metricsserver.Options{BindAddress: "0"}` disables the
+manager's Prometheus metrics endpoint — `"0"` is the sentinel for
+"don't bind a port at all." The test environment has nothing to scrape
+that endpoint with, and concurrent test runs would otherwise fight
+over the same port, so off it goes.
+
 ### What `ctrl.NewManager` actually does
 
 `ctrl.NewManager` is the one call underneath everything a controller
@@ -196,6 +203,21 @@ API validation"`, since this file is testing different behavior). Every
 `It` block for the rest of this chapter goes inside this one `Describe`,
 in place of the `// It blocks go here` comment.
 
+The `var _ =` in front of `Describe` is a Go idiom worth pausing on,
+because it looks like noise until you know why it's there. `Describe(...)`
+returns a value we deliberately throw away (`_`) — we don't want the
+value, we want the *side effect*: calling `Describe` is what registers
+that branch of the test tree with Ginkgo, and because the call sits at
+package level, it runs when the test package initializes. A bare
+`Describe(...)` call at the top level of a file won't even compile —
+Go only allows declarations there — so the assignment exists purely to
+make the legal version of "call this for its side effect."
+
+Two names used inside every `It` below need no import in this file:
+`ctx` and `k8sClient` are the package-level variables `suite_test.go`
+declared and wired up in `BeforeSuite` (Chapter 1). This file uses them
+without declaring them because it's the same package.
+
 `timeout` and `interval` are declared once, right inside that
 `Describe`, because every `Eventually(...)` call in every `It` block
 below reuses the same two values — no reason to repeat
@@ -203,6 +225,81 @@ below reuses the same two values — no reason to repeat
 scoped inside the `Describe` rather than at the top of the file so
 they can't collide with a same-named constant some other test file in
 this package might declare later.
+
+### The shape of Reconcile
+
+Before writing any of the four owned resources, look at the frame
+they'll all be added to. The scaffolded `Reconcile` stub in
+`postgrestenant_controller.go` already has this signature; what it
+gains in this chapter is the fetch of the tenant and, one section at
+a time, a block per resource. Here's the frame:
+
+```go
+func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	var tenant postgresv1alpha1.PostgresTenant
+	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil // tenant deleted; nothing left to reconcile
+		}
+		return ctrl.Result{}, err
+	}
+
+	// one block per owned resource gets added here, one section at a time
+
+	return ctrl.Result{}, nil
+}
+```
+
+Five things in those twelve lines explain most of what a reconciler
+*is*:
+
+- `req ctrl.Request` is exactly the queue entry the manager section
+  described — nothing but a name. Its type `types.NamespacedName` is a
+  two-field struct (`Name`, `Namespace`), the composite key every
+  namespaced Kubernetes object is addressed by. The queue entry says
+  *what* might need attention; the very first `Get` fetches the live
+  object to find out *why*.
+- The not-found branch handles the case where the tenant was deleted
+  between the queue entry landing and this `Get` running. The right
+  response is to do nothing, quietly — all four owned resources carry
+  owner references, so Kubernetes itself garbage-collects them when
+  the tenant goes away. The reconciler has no cleanup of its own to do.
+- `apierrors.IsNotFound(err)` — Kubernetes errors are matched, not
+  compared. The API server wraps every failure in a `*StatusError`
+  carrying a reason string, so asking "is this the not-found one?"
+  goes through helpers in `k8s.io/apimachinery/pkg/api/errors`, which
+  the project (following controller-runtime convention) imports under
+  the alias `apierrors` — the alias exists because the package's real
+  name is `errors`, which would collide with Go's standard library
+  package of the same name.
+- `ctrl.Result` is the reconciler's answer back to the manager: "done,
+  for now." An empty `Result` means nothing more to schedule. What the
+  fields actually control — explicit requeues, rate-limited retries —
+  is the requeue strategy, and that's Chapter 3's entire subject. Until
+  then, every path in `Reconcile` returns an empty one.
+- The signature's `(ctrl.Result, error)` pair is the contract with the
+  work queue: return an error and the manager re-queues that name to
+  retry later; return nil and it doesn't. That's the whole retry
+  mechanism — there is no other.
+
+`postgrestenant_controller.go` needs these imports for everything this
+chapter adds to it (the scaffolded file already has most of them):
+
+```go
+import (
+	"context"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	postgresv1alpha1 "github.com/yourusername/fleetdb/api/v1alpha1"
+)
+```
 
 ### Red: the Secret
 
@@ -229,6 +326,19 @@ It("creates a Secret holding the tenant's database credentials", func() {
 	Expect(secret.Data["POSTGRES_DB"]).To(Equal([]byte("acme")))
 })
 ```
+
+One apparent inconsistency in that test is worth clearing up before
+it bites: the assertions read `secret.Data`, but the builder you'll
+write below sets `StringData`. Both are real Secret fields, and the
+difference trips everyone exactly once. `Data` holds the final,
+base64-encoded bytes (`map[string][]byte`) as the API server actually
+stores them. `StringData` is a *write-only* convenience: you supply
+plain strings, and the API server does the base64 encoding when the
+object is created — it never reads back. So the builder writes
+`StringData` because plaintext is easier to produce, and the test
+reads `Data` because that's what the API server stores — the test
+sees the object the way the cluster does, not the way the builder
+did.
 
 `make test` against the still-empty `Reconcile` stub:
 
@@ -307,28 +417,47 @@ func desiredSecret(tenant *postgresv1alpha1.PostgresTenant) (*corev1.Secret, err
 }
 ```
 
+Those three key names aren't arbitrary, and it's worth knowing why
+*these* keys before moving on: the official `postgres` container
+image reads its initial configuration from environment variables.
+`POSTGRES_USER` names the superuser to create, `POSTGRES_PASSWORD`
+sets that user's password, and `POSTGRES_DB` names the database to
+create on first startup. Writing exactly those keys is what makes the
+Secret and the Postgres container connect later — in the StatefulSet
+section, the pod will hand this entire Secret to the container as
+environment variables, and the image will find values where it knows
+to look.
+
 and in `Reconcile`:
 
 ```go
+key := types.NamespacedName{Name: resourceName(&tenant), Namespace: tenant.Namespace}
 var existing corev1.Secret
-err := r.Get(ctx, types.NamespacedName{Name: resourceName(&tenant), Namespace: tenant.Namespace}, &existing)
-if err == nil {
-	return ctrl.Result{}, nil // already exists, nothing to do
-}
-if !apierrors.IsNotFound(err) {
-	return ctrl.Result{}, err
-}
-secret, err := desiredSecret(&tenant)
-if err != nil {
-	return ctrl.Result{}, err
-}
-if err := ctrl.SetControllerReference(&tenant, secret, r.Scheme); err != nil {
-	return ctrl.Result{}, err
-}
-if err := r.Create(ctx, secret); err != nil {
+err := r.Get(ctx, key, &existing)
+if apierrors.IsNotFound(err) {
+	secret, err := desiredSecret(&tenant)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := ctrl.SetControllerReference(&tenant, secret, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Create(ctx, secret); err != nil {
+		return ctrl.Result{}, err
+	}
+} else if err != nil {
 	return ctrl.Result{}, err
 }
 ```
+
+Notice the shape: the create happens *inside* the `IsNotFound`
+branch, and when the Secret already exists this code simply falls
+through to whatever comes next — it does not `return`. At this
+instant `Reconcile` handles only the Secret, so an early return would
+be harmless, but writing the fall-through version now is deliberate:
+the moment a second resource is added below, an early `return` here
+would silently skip it. Keep that shape in mind; it's what the
+`reconcileCreateOnce` refactor generalizes in a few sections.
 
 `ctrl.SetControllerReference` is the same call you'd already use in
 Kubebuilder — it stamps an owner reference on `secret` pointing back
@@ -356,11 +485,22 @@ matters in the next section.
 
 ### Red, green: the PersistentVolumeClaim
 
-Same shape, added as its own `It` block:
+Same shape, added as its own `It` block — and this time the whole
+thing, because it's the template every remaining spec in the chapter
+follows: declare a tenant with a *fresh name*, create it,
+`Eventually`-poll for the owned resource, assert on what appeared.
 
 ```go
 It("creates a PersistentVolumeClaim sized from the tenant's spec", func() {
-	// ...create a tenant with StorageSize: mustQuantity("5Gi")...
+	tenant := &postgresv1alpha1.PostgresTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "widgets", Namespace: "default"},
+		Spec: postgresv1alpha1.PostgresTenantSpec{
+			DatabaseName: "widgets",
+			StorageSize:  mustQuantity("5Gi"),
+		},
+	}
+	Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	Eventually(func() error {
 		return k8sClient.Get(ctx, types.NamespacedName{
@@ -372,6 +512,24 @@ It("creates a PersistentVolumeClaim sized from the tenant's spec", func() {
 	Expect(pvc.Spec.AccessModes).To(ConsistOf(corev1.ReadWriteOnce))
 })
 ```
+
+Each tenant in this chapter gets its own name (`acme`, `widgets`,
+`gizmos`, `sprockets`, `cogs`) so no two specs share cluster state —
+the tests in a package share one envtest API server, and a
+left-behind `acme` from a previous spec would make this spec's
+assertions read someone else's resources. Later specs will abbreviate
+the tenant setup to a comment, but this is what it expands to every
+time.
+
+Two vocabulary items before the implementation, since this is the
+spec's first appearance: a PersistentVolumeClaim is a *request for
+storage* — "I need this much, with these access rules" — that
+Kubernetes satisfies with an actual volume behind the scenes. The pod
+never talks to the volume directly; it references the claim, and
+Kubernetes does the binding. And `ReadWriteOnce` means the volume may
+be mounted read-write by a *single node* — exactly right for a
+one-pod database, and wrong (restrictive) for anything that needs
+many pods sharing storage.
 
 Fails the same way the Secret test did — `persistentvolumeclaims
 "widgets-postgres" not found` — and the fix is the same shape too:
@@ -400,7 +558,13 @@ func desiredPVC(tenant *postgresv1alpha1.PostgresTenant) *corev1.PersistentVolum
 ```
 
 wired into `Reconcile` with the same get-or-create block as the
-Secret, just swapping the type. The reason a PVC is also
+Secret, just swapping the type. One small Go detail in the middle of
+the builder: `*tenant.Spec.StorageSize` dereferences the pointer that
+Chapter 1's `resource.Quantity` bug taught us to use — the spec
+stores a `*resource.Quantity`, and the `ResourceList` map wants the
+value itself.
+
+The reason a PVC is also
 create-once, never updated, is different from the Secret's reason but
 lands in the same place: most storage drivers can't shrink a volume or
 change its access mode after the fact, so pretending an update would
@@ -490,7 +654,8 @@ cleanup didn't introduce one.
 
 ```go
 It("creates a headless Service on the Postgres port", func() {
-	// ...tenant "gizmos"...
+	// ...tenant "gizmos", created exactly like "widgets" above,
+	// with DatabaseName "gizmos" and StorageSize mustQuantity("1Gi")...
 	svc := &corev1.Service{}
 	Eventually(func() error {
 		return k8sClient.Get(ctx, types.NamespacedName{
@@ -543,6 +708,15 @@ the StatefulSet's pod template needs to carry the *same* labels the
 Service selects on — one shared source of truth for that pair, not two
 copies that could quietly drift apart.
 
+One type on the port deserves a first mention: `TargetPort:
+intstr.FromInt32(5432)`. `TargetPort`'s Go type is `intstr.IntOrString`
+— a Kubernetes API type that accepts either a number or a name,
+because the API itself allows ports to be identified either way (named
+ports matter when multiple containers share a pod). We have a plain
+number, so `FromInt32` wraps it in that either-or type. You'll see
+`intstr` types all over the Kubernetes Go API; now you know what the
+name means.
+
 ```console
 $ make test
 ...
@@ -554,9 +728,34 @@ create-once stops being the right policy.
 
 ### Red, green: the StatefulSet, and why it needs a different policy
 
+The StatefulSet is the piece everything else was built for, and it's
+worth defining properly before writing it, because if this is your
+first workload controller it isn't obvious why a Deployment won't do.
+A Deployment treats its pods as interchangeable: kill one, a
+replacement appears, and no promise is made about *which* pod is
+which. A StatefulSet makes exactly those promises — each pod gets a
+stable, predictable name (the first pod of `sprockets-postgres` is
+always `sprockets-postgres-0`, across every restart), a stable DNS
+identity, and a fixed pairing between a pod and its storage. Postgres
+is the textbook case: the data on disk must survive restarts and stay
+attached to the same logical database, and `postgres-0`'s volume must
+never quietly become `postgres-1`'s. That's why the tenant's pod runs
+under a StatefulSet and not a Deployment, and it's the reason the
+headless Service in the last section was the right call — the two
+designs are a matched pair, as you're about to see in the assertions.
+
 ```go
 It("creates a single-replica StatefulSet running the requested Postgres version", func() {
-	// ...tenant "sprockets", PostgresVersion: "15"...
+	tenant := &postgresv1alpha1.PostgresTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "sprockets", Namespace: "default"},
+		Spec: postgresv1alpha1.PostgresTenantSpec{
+			DatabaseName:    "sprockets",
+			StorageSize:     mustQuantity("1Gi"),
+			PostgresVersion: "15",
+		},
+	}
+	Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
 	sts := &appsv1.StatefulSet{}
 	Eventually(func() error {
 		return k8sClient.Get(ctx, types.NamespacedName{
@@ -565,18 +764,63 @@ It("creates a single-replica StatefulSet running the requested Postgres version"
 	}, timeout, interval).Should(Succeed())
 
 	Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
+	Expect(sts.Spec.ServiceName).To(Equal("sprockets-postgres"))
+	Expect(sts.Spec.Selector.MatchLabels).To(Equal(map[string]string{"postgrestenant": "sprockets"}))
 	Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("postgres:15"))
-	// ...volume mount, envFrom Secret, volume backed by the PVC...
+	Expect(sts.Spec.Template.Spec.Containers[0].EnvFrom[0].SecretRef.Name).To(Equal("sprockets-postgres"))
+	Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
+	Expect(sts.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("sprockets-postgres"))
 })
 ```
+
+Read those assertions as a set and notice they're not four unrelated
+checks — they're the StatefulSet *wiring itself to the other three
+resources this chapter already built*:
+
+- `ServiceName: "sprockets-postgres"` — a StatefulSet requires a
+  *governing Service*: a headless Service that gives its pods their
+  stable DNS names. This is the Service from the previous section,
+  and it's the real reason that Service had to be headless. The two
+  resources were never independent; this field is the link.
+- `EnvFrom[0].SecretRef.Name` — the pod injects the entire credential
+  Secret as environment variables. That's the mechanism behind the
+  "exactly those key names" promise from the Secret section: the
+  `postgres` image reads `POSTGRES_USER`, `POSTGRES_PASSWORD`, and
+  `POSTGRES_DB` from its environment, and `envFrom` is how they get
+  there.
+- `MountPath: "/var/lib/postgresql/data"` — the directory the
+  `postgres` image stores its data in. Mounting our volume there is
+  what puts the database's files on the tenant's PVC instead of the
+  pod's ephemeral filesystem.
+- `ClaimName: "sprockets-postgres"` — the volume *is* the PVC the
+  reconciler created two sections ago, referenced by name. Pod dies,
+  replacement pod starts, Kubernetes reattaches the same claim — the
+  data survives.
 
 Then a second `It`, written before any StatefulSet code exists at all,
 that pins down behavior create-once *can't* give us:
 
 ```go
 It("updates an existing StatefulSet's image when postgresVersion changes", func() {
-	// ...create tenant "cogs" with PostgresVersion: "15"...
-	// ...wait for the StatefulSet, confirm image is postgres:15...
+	tenant := &postgresv1alpha1.PostgresTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: "cogs", Namespace: "default"},
+		Spec: postgresv1alpha1.PostgresTenantSpec{
+			DatabaseName:    "cogs",
+			StorageSize:     mustQuantity("1Gi"),
+			PostgresVersion: "15",
+		},
+	}
+	Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
+
+	sts := &appsv1.StatefulSet{}
+	Eventually(func() string {
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "cogs-postgres", Namespace: "default",
+		}, sts); err != nil {
+			return ""
+		}
+		return sts.Spec.Template.Spec.Containers[0].Image
+	}, timeout, interval).Should(Equal("postgres:15"))
 
 	Eventually(func() error {
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cogs", Namespace: "default"}, tenant); err != nil {
@@ -597,6 +841,14 @@ It("updates an existing StatefulSet's image when postgresVersion changes", func(
 })
 ```
 
+A new Gomega shape appears here, twice: closures that return a value
+(a `string`) instead of an `error`. `Eventually` polls whatever the
+closure returns and applies the matcher to that value — an `error`
+return gets the `Succeed()` matcher, a `string` return gets
+`Equal(...)`. Returning `""` on a failed `Get` keeps the poll loop
+alive through the window where the StatefulSet doesn't exist yet,
+rather than letting a `nil`-map panic escape the closure.
+
 The fetch-then-`Update` pattern for changing the tenant's spec —
 rather than mutating a stale copy — is there because `k8sClient.Update`
 requires the object's current `resourceVersion`; wrapping it in
@@ -613,6 +865,13 @@ gets its image updated, which is exactly the behavior create-once
 refuses to do. This is the point where the pattern that served three
 resources correctly stops applying to the fourth — worth noticing
 that rather than forcing it through.
+
+Two functions fix it, and they live in different files —
+`applyStatefulSetSpec` goes in `postgrestenant_resources.go`
+alongside the other builders, and `reconcileStatefulSet` goes in
+`postgrestenant_controller.go` next to `reconcileCreateOnce`, with
+`Reconcile` calling it right after the three create-once blocks (the
+complete listing at the end of this chapter shows exactly where):
 
 ```go
 func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.PostgresTenant) {
@@ -680,6 +939,74 @@ different policy because its own behavior requirement — "update the
 image when the version changes" — is different in kind, not just in
 type, from the other three.
 
+### The complete Reconcile
+
+The chapter built `Reconcile` one fragment at a time; here is the
+whole thing in one piece, exactly as it stands at the commit
+checkpoint:
+
+```go
+func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	var tenant postgresv1alpha1.PostgresTenant
+	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{}, func() (client.Object, error) {
+		return desiredSecret(&tenant)
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
+		return desiredPVC(&tenant), nil
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Service{}, func() (client.Object, error) {
+		return desiredService(&tenant), nil
+	}); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileStatefulSet(ctx, &tenant); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	return ctrl.Result{}, nil
+}
+```
+
+Read top to bottom, the order isn't arbitrary either. The three
+create-once resources come first because the StatefulSet *consumes*
+all of them: its pod injects the Secret as environment variables,
+mounts the PVC as its data directory, and takes its DNS identity from
+the Service. Creating them first means that by the time the Postgres
+pod starts, everything it needs already exists — get the order wrong
+and you get pods stuck in `ContainerCreating` or crash-looping on
+missing credentials, the classic operator bug whose cause is an
+ordering choice three functions earlier.
+
+### One honest gap: RBAC
+
+Something the tests can't catch, and worth naming before it surprises
+you: everything in this chapter runs under envtest, and envtest does
+not enforce RBAC. The reconciler here `Get`s and `Create`s Secrets,
+PersistentVolumeClaims, Services, and StatefulSets with total freedom
+— but in a real cluster, the operator's ServiceAccount is only
+allowed what RBAC says it's allowed, and the scaffolded
+`postgrestenant_controller.go` carries `+kubebuilder:rbac` markers
+only for `postgrestenants` itself. Deploy this reconciler as-is and
+every child-resource create fails with `Forbidden`. The fix — adding
+the RBAC markers so `make manifests` generates the right Roles —
+happens when FleetDB first gets built and deployed as a real image,
+in a later chapter. Nothing in this chapter's tests is wrong; the
+test environment just can't see the problem.
+
 ## How this differs from Kubebuilder
 
 Nothing does. Everything in this chapter — `client.Client`,
@@ -688,7 +1015,7 @@ references and cascade deletion, the manager/cache/watch plumbing
 `SetupWithManager` wires up — is controller-runtime, and Operator SDK's
 scaffolding hands you the exact same APIs Kubebuilder would. The
 divergence between the two tools lives entirely in scaffolding and
-packaging (Chapters 0, 1, and everything from Chapter 9 onward), not
+packaging (Chapters 0, 1, and everything from Chapter 14 onward), not
 in how a reconciler is written.
 
 ## Commit checkpoint

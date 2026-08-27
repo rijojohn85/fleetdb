@@ -1,1 +1,0 @@
-# OLM Install on Kind

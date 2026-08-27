@@ -95,9 +95,9 @@ from the `PROJECT` file just did. A plain Kubebuilder scaffold stops at
 needed to `kubectl apply` the operator directly. Operator SDK adds two
 more directories that only matter once you're packaging the operator
 for OLM: `config/manifests` becomes the base that `operator-sdk
-generate bundle` builds a `ClusterServiceVersion` from (Chapter 9), and
+generate bundle` builds a `ClusterServiceVersion` from (Chapter 16), and
 `config/scorecard` holds the scorecard test configuration (Chapter
-10). Both sit empty of real content right now — we're just noting
+17). Both sit empty of real content right now — we're just noting
 where they came from before they matter.
 
 ## Designing PostgresTenantSpec
@@ -579,7 +579,7 @@ to surface here.
 |---|---|---|
 | `init` / `create api` | Same commands, same flags | Identical — same underlying scaffolding engine |
 | `PROJECT` file | `layout` only | Adds a `plugins` section (`manifests.sdk.operatorframework.io/v2`, `scorecard.sdk.operatorframework.io/v2`) registering OLM-oriented generators for later |
-| `config/` directories | `crd`, `default`, `manager`, `network-policy`, `prometheus`, `rbac`, `samples` | Same, plus `manifests` (bundle base, Chapter 9) and `scorecard` (Chapter 10) |
+| `config/` directories | `crd`, `default`, `manager`, `network-policy`, `prometheus`, `rbac`, `samples` | Same, plus `manifests` (bundle base, Chapter 16) and `scorecard` (Chapter 17) |
 | `api/`, `internal/controller/`, `envtest` harness | — | Identical; controller-runtime underneath doesn't change |
 | Makefile | Standard `build`/`test`/`deploy`/`manifests` targets | Same, plus `bundle`, `bundle-build`, `catalog-build` targets (unused until Phase 4) |
 
@@ -600,7 +600,7 @@ fleetdb/
 ├── internal/controller/
 │   ├── postgrestenant_controller.go   # still an empty stub — Chapter 2
 │   ├── postgrestenant_api_test.go     # the 4 validation cases from this chapter
-│   └── suite_test.go                  # scaffolded controller test deleted — see above
+│   └── suite_test.go                  # scaffolded postgrestenant_controller_test.go deleted — see above
 └── config/
     ├── crd/bases/postgres.fleetdb.io_postgrestenants.yaml
     ├── manifests/                     # present, empty of real content

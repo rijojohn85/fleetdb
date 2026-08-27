@@ -84,7 +84,7 @@ package management — here's the translation:
 | `OperatorGroup` | N/A — no real analogue | Kubernetes-specific: tells OLM which namespaces the operators living in a given namespace are allowed to watch. Needed because several unrelated operators can share one cluster, and OLM needs to know each one's blast radius. |
 | `packageserver` | The `apt` / `dpkg` binary itself | The actual OLM component that reads `CatalogSources` and exposes them as a queryable API (`kubectl get packagemanifests`) — the thing doing the work behind every row above. |
 
-We won't touch most of these directly until Chapter 6 onward, when
+We won't touch most of these directly until Chapter 16 onward, when
 FleetDB itself becomes something with a `ClusterServiceVersion` of its
 own. For now, all we need is confirmation that OLM's own machinery —
 `olm-operator`, `catalog-operator`, and `packageserver` — starts up
@@ -132,7 +132,7 @@ keep from it.
 |---|---|---|
 | Project init | `kubebuilder init` | `operator-sdk init` — same flags, same scaffold shape, because it's the same underlying machinery. No practical difference yet; that starts in Chapter 1 when the generated `PROJECT` file and Makefile targets diverge slightly. |
 | Deploying locally | `make deploy` applies raw manifests directly | Also available, and what we used here — but Operator SDK *additionally* gives you `operator-sdk olm install` and, later, `operator-sdk run bundle`, an alternate install path that goes through OLM instead of raw `kubectl apply`. |
-| Packaging for others | Not provided — you write your own Helm chart or raw manifests | `operator-sdk generate bundle` produces an OLM-installable package (a CSV plus CRDs) — Chapter 6. |
+| Packaging for others | Not provided — you write your own Helm chart or raw manifests | `operator-sdk generate bundle` produces an OLM-installable package (a CSV plus CRDs) — Chapter 16. |
 | Install-time lifecycle (upgrades, dependency resolution, discovery) | Out of scope entirely | OLM's job, as described above. |
 
 ## Commit checkpoint
@@ -148,7 +148,7 @@ fleet-db/
 │       ├── introduction.md
 │       ├── ch00_toolchain_and_olm.md
 │       ├── phase0-smoke-test.log
-│       └── ch01_...ch10_...md     # stubs, filled in as we go
+│       └── ch01_...ch19_...md     # stubs, filled in as we go
 ├── fleetdb/                       # empty — FleetDB's Go module starts in Chapter 1
 └── fleetdb-operator-sdk-book-prompt.md
 ```
