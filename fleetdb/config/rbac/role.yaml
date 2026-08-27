@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - postgres.rijojohn.xyz
+  resources:
+  - postgrestenants
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - postgres.rijojohn.xyz
+  resources:
+  - postgrestenants/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - postgres.rijojohn.xyz
+  resources:
+  - postgrestenants/status
+  verbs:
+  - get
+  - patch
+  - update
