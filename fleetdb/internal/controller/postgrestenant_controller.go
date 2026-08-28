@@ -22,10 +22,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	postgresv1alpha1 "github.com/rijojohn85/fleetdb/api/v1alpha1"
@@ -74,9 +77,130 @@ func desiredSecret(tenant *postgresv1alpha1.PostgresTenant) (*corev1.Secret, err
 	}, nil
 }
 
+func desiredPVC(tenant *postgresv1alpha1.PostgresTenant) *corev1.PersistentVolumeClaim {
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName(tenant),
+			Namespace: tenant.Namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: *tenant.Spec.StorageSize,
+				},
+			},
+		},
+	}
+	if tenant.Spec.StorageClassName != "" {
+		pvc.Spec.StorageClassName = &tenant.Spec.StorageClassName
+	}
+	return pvc
+}
+
+func selectorLabels(tenant *postgresv1alpha1.PostgresTenant) map[string]string {
+	return map[string]string{constants.SELECTOR_LABEL_KEY: tenant.Name}
+}
+
+func desiredService(tenant *postgresv1alpha1.PostgresTenant) *corev1.Service {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName(tenant),
+			Namespace: tenant.Namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			ClusterIP: corev1.ClusterIPNone,
+			Selector:  selectorLabels(tenant),
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "postgres",
+					Port:       5432,
+					TargetPort: intstr.FromInt32(5432), Protocol: corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+	return svc
+}
+
+func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.PostgresTenant) {
+	imageName := "postgres:"
+	if tenant.Spec.PostgresVersion != "" {
+		imageName += tenant.Spec.PostgresVersion
+	} else {
+		imageName += "16"
+	}
+	replicas := int32(1)
+	sts.Spec = appsv1.StatefulSetSpec{
+		Replicas:    &replicas,
+		ServiceName: resourceName(tenant),
+		Selector: &metav1.LabelSelector{
+			MatchLabels: selectorLabels(tenant),
+		},
+		Template: corev1.PodTemplateSpec{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: selectorLabels(tenant),
+			},
+			Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{
+					{
+						Name: "data",
+						VolumeSource: corev1.VolumeSource{
+							PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+								ClaimName: resourceName(tenant),
+							},
+						},
+					},
+				},
+
+				Containers: []corev1.Container{
+					{
+						Name:  resourceName(tenant),
+						Image: imageName,
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "data",
+								MountPath: "/var/lib/postgresql/data",
+							},
+						},
+						EnvFrom: []corev1.EnvFromSource{
+							{
+								SecretRef: &corev1.SecretEnvSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: resourceName(tenant),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant) error {
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName(tenant),
+			Namespace: tenant.Namespace,
+		},
+	}
+
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+		applyStatefulSetSpec(sts, tenant)
+		return ctrl.SetControllerReference(tenant, sts, r.Scheme)
+	})
+	return err
+}
+
 // +kubebuilder:rbac:groups=postgres.rijojohn.xyz,resources=postgrestenants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=postgres.rijojohn.xyz,resources=postgrestenants/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=postgres.rijojohn.xyz,resources=postgrestenants/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -101,31 +225,76 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			return ctrl.Result{}, nil
 		}
 	}
+	resName := resourceName(&tenant)
+	var existingSecret corev1.Secret
+	if created, err := r.reconcileCreateOnce(ctx, &tenant, &existingSecret, func() (client.Object, error) {
+		return desiredSecret(&tenant)
+	}); err != nil {
+		log.Error(err, "fetching or creating secret", "secret", resName)
+		return ctrl.Result{}, err
+	} else {
+		if created {
+			log.Info("secret created", "secret", resName)
+		}
+	}
 
-	var existing corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Name: resourceName(&tenant), Namespace: tenant.Namespace}, &existing)
+	var existingPVC corev1.PersistentVolumeClaim
+	if created, err := r.reconcileCreateOnce(ctx, &tenant, &existingPVC, func() (client.Object, error) {
+		return desiredPVC(&tenant), nil
+	}); err != nil {
+		log.Error(err, "fetching or creating pvc", "pvc", resName)
+		return ctrl.Result{}, err
+	} else {
+		if created {
+			log.Info("pvc created", "pvc", resName)
+		}
+	}
+
+	var existingService corev1.Service
+	if created, err := r.reconcileCreateOnce(ctx, &tenant, &existingService, func() (client.Object, error) {
+		return desiredService(&tenant), nil
+	}); err != nil {
+		log.Error(err, "fetching or creating service", "service", resName)
+		return ctrl.Result{}, err
+	} else {
+		if created {
+			log.Info("service create", "service", resName)
+		}
+	}
+
+	err := r.reconcileStatefulSet(ctx, &tenant)
+	if err != nil {
+		log.Error(err, "error reconciling statefulset")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("succesfully reconciled tenant")
+	return ctrl.Result{}, nil
+}
+
+func (r *PostgresTenantReconciler) reconcileCreateOnce(
+	ctx context.Context,
+	tenant *postgresv1alpha1.PostgresTenant,
+	existing client.Object,
+	build func() (client.Object, error),
+) (bool, error) {
+	key := types.NamespacedName{Name: resourceName(tenant), Namespace: tenant.Namespace}
+	err := r.Get(ctx, key, existing)
 	if err == nil {
-		log.Info("secret already exists, nothing to do.")
-		return ctrl.Result{}, nil
+		return false, nil
 	}
 	if !apierrors.IsNotFound(err) {
-		log.Error(err, "fetching secret")
+		return false, err
 	}
 
-	secret, err := desiredSecret(&tenant)
+	obj, err := build()
 	if err != nil {
-		log.Error(err, "creating secret object")
+		return false, err
 	}
-	if err := ctrl.SetControllerReference(&tenant, secret, r.Scheme); err != nil {
-		log.Error(err, "setting controller reference to secret")
-		return ctrl.Result{}, err
+	if err := ctrl.SetControllerReference(tenant, obj, r.Scheme); err != nil {
+		return false, err
 	}
-	if err := r.Create(ctx, secret); err != nil {
-		log.Error(err, "error creating secret with client")
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+	return true, r.Create(ctx, obj)
 }
 
 // SetupWithManager sets up the controller with the Manager.
