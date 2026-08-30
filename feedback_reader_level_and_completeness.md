@@ -48,3 +48,9 @@ working code from it.
   coverage percentages and compile output must be real, not plausible.
   User is verifying Chapter 2 themselves; confirm its printed numbers
   when it's their turn to run.
+- **Loops, guards, and state machines get timeline walk-throughs** —
+  a tick-by-tick concrete example (e.g. Chapter 3's five-tick
+  walkthrough of the `changed` guard), not just prose about why the
+  code is correct. Found in a Chapter 3 review (2026-08-31): the
+  abstract "guard against DoS" explanation confused the reader until
+  the concrete walkthrough was added.

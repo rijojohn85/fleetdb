@@ -315,6 +315,53 @@ already agree — and the cost of forgetting it is a hot reconcile
 loop. Notice it's also the same fetch-first, write-only-if-different
 instinct as Chapter 2's `reconcileCreateOnce`, now applied to status.
 
+Read the block as two change-detectors feeding one decision — "did
+anything I'm about to report actually change?" — because that's all
+it is. `SetStatusCondition`'s return value is the first detector: did
+the Ready condition move? The `ObservedGeneration` comparison is the
+second: has the spec been edited since our bookmark? Only when at
+least one fires does the write happen.
+
+A concrete walk-through makes the ticks visible. Watch the `bolts`
+tenant through a normal life:
+
+- **Tick 1 — first reconcile after the tenant is created.** The
+  status condition list is empty, so appending `Ready=False` is a
+  change (`changed = true`), and `ObservedGeneration` (0) doesn't
+  match `Generation` (1), so the bookmark gets set. Both detectors
+  fired → **write**. Status now says `Ready=False, ObservedGeneration=1`.
+- **Tick 2 — one second later, and the important one.** Why is there
+  a tick 2 at all? Because tick 1's status write is itself a change
+  to a watched object — the manager queued the tenant again. This
+  time the StatefulSet still isn't ready, so we build the identical
+  `Ready=False/Provisioning` condition; `SetStatusCondition` replaces
+  it with a byte-for-byte copy and returns `false`. The bookmark
+  already matches. Neither detector fired → **return nil, write
+  nothing**. The write that triggered this reconcile writes nothing,
+  nothing triggers anything else, and the loop *stops here*.
+- **Tick 3 — the ten-second `RequeueAfter` timer fires** with the
+  world unchanged. Identical condition, matching bookmark → no write.
+  This repeats every ten seconds for as long as the tenant isn't
+  ready, each poll costing one reconcile and zero writes.
+- **Tick 4 — the Postgres pod becomes ready** (a real cluster: a
+  status update from the node; the test: our own write). The
+  `.Owns` watch fires a reconcile, we build `Ready=True/Ready`, which
+  differs from the stored False — detector one fires,
+  `LastTransitionTime` gets stamped → **write**. Status says Ready.
+  The write triggers one more reconcile, which now matches → quiet.
+- **Tick 5 — someone edits the spec** (`postgresVersion: "17"`). The
+  API server bumps `Generation` to 2 and the edit triggers a
+  reconcile. The StatefulSet is updated and still ready, so the
+  condition is unchanged — but detector two fires (`ObservedGeneration`
+  1 ≠ `Generation` 2) → **write**, and the only thing that moved in
+  the whole status is the bookmark. The condition's
+  `LastTransitionTime` is untouched, because the condition itself
+  never transitioned.
+
+Five ticks, four writes — and none of them wasted. Delete the
+`if !changed` guard and every single one of those ticks becomes a
+write, including the infinitely many ticks 6, 7, 8... that follow.
+
 **`ObservedGeneration` is only bumped when the reconcile got this
 far.** If `reconcileStatefulSet` errors out, `Reconcile` returns
 before `updateStatus`, leaving `ObservedGeneration` pointing at the
@@ -333,6 +380,21 @@ scaffold's RBAC markers already carry
 `resources=postgrestenants/status,verbs=get;update;patch` — the
 permission this call needs. envtest won't enforce it (that honest gap
 from Chapter 2 still applies), but a real cluster will.
+
+Run the suite — the bolts spec goes green, and so do all five of
+Chapter 2's:
+
+```console
+$ make test
+...
+ok  	github.com/yourusername/fleetdb/internal/controller	7.283s
+```
+
+Notice what that green is *not*: it doesn't prove the requeue timer
+works, and it doesn't prove the condition will ever flip to True.
+Six specs now pass with a condition that — in envtest, where no
+kubelet ever readies a pod — will stay False forever. The next test
+is the one that makes True reachable.
 
 ### The requeue strategy, so far
 
