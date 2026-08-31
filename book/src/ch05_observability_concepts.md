@@ -59,17 +59,104 @@ metric_name{label="value",other_label="value"} 12345
 
 The name says *what* is being measured, the labels say *which
 slice* of it, and the number is the measurement. Three kinds of
-measurement cover nearly everything you'll ever emit or consume:
+measurement cover nearly everything you'll ever emit or consume, and
+each is a different everyday object. (The snippets below are
+illustrations — Chapter 6 builds real metrics — but the API shown is
+exactly the one you'll use.)
 
-- **Counter** — only ever goes up. Requests handled, errors seen,
-  reconciles run. The interesting signal is never the value itself
-  but its *rate of change* ("errors jumped from ~0/min to 40/min").
-- **Gauge** — a current reading that goes up *and* down. Queue depth,
-  active workers, memory used. The value is the signal.
-- **Histogram** — many measurements dropped into buckets ("how many
-  reconciles took under 5ms? under 25ms?"). This is how you answer
-  "how slow is slow?" — you can't keep every duration as a metric,
-  but buckets give you percentiles.
+### Counter: a tally (a door-clicker)
+
+A counter counts things that *happen*. It only ever goes up — you
+can't un-happen a login:
+
+```go
+var logins = prometheus.NewCounter(prometheus.CounterOpts{
+	Name: "fleetdb_logins_total",
+	Help: "How many logins have happened since start.",
+})
+
+// when a user logs in:
+logins.Inc()
+```
+
+Here's the strange part: the value itself is boring. "5000 logins
+since startup" answers nothing. The *speed of change* is the whole
+signal — the counter sat at 4900 for an hour, then climbed to 5000
+in ten minutes: a login storm, visible in one number. This is why
+Chapter 6 counts *events* (credentials generated, backups
+scheduled), and why Chapter 9's dashboards graph counters with
+`rate()` — "how fast is it climbing?" — rather than the raw value.
+
+### Gauge: a thermometer
+
+A gauge is a current reading. It goes up *and* down, because the
+thing it measures goes up and down:
+
+```go
+var openConnections = prometheus.NewGauge(prometheus.GaugeOpts{
+	Name: "fleetdb_open_connections",
+	Help: "Database connections open right now.",
+})
+
+// a client connects:
+openConnections.Inc()
+// a client disconnects:
+openConnections.Dec()
+```
+
+Unlike a counter, the value *is* the answer. "42 connections right
+now" is a complete fact; if it drops to 3, or climbs to 500, the
+level at this moment is the story.
+
+The trick for telling a counter from a gauge: ask *"could this
+number ever sensibly go down?"* Connections close, so
+`open_connections` is a gauge. Logins never un-happen, so
+`logins_total` is a counter.
+
+### Histogram: a sorting tray
+
+A counter tracks one growing number and a gauge tracks one current
+level — but neither can answer *"what does typical look like?"*
+A histogram takes many measurements (durations, sizes) and files
+each into ranges:
+
+```go
+var backupDuration = prometheus.NewHistogram(
+	prometheus.HistogramOpts{
+		Name:    "fleetdb_backup_duration_seconds",
+		Help:    "How long backups take.",
+		Buckets: []float64{1, 10, 60, 300}, // 1s, 10s, 1m, 5m
+	},
+)
+
+// a backup finished, taking 37.2 seconds:
+backupDuration.Observe(37.2)
+```
+
+`Observe(37.2)` doesn't store "37.2" — it adds a tally mark to two
+ranges: "under 60s" and "under 300s". After 100 backups, the
+endpoint holds:
+
+```text
+backup_duration_seconds_bucket{le="1"}    5    # 5 finished under 1s
+backup_duration_seconds_bucket{le="10"}   30   # 30 under 10s
+backup_duration_seconds_bucket{le="60"}   90   # 90 under 1min
+backup_duration_seconds_bucket{le="300"}  100  # all under 5min
+```
+
+From four numbers: "90% of backups finish within a minute" — without
+ever storing 100 individual times. And the reason a simple average
+won't do the same job: 99 backups at 10 seconds and one at 3 hours
+average out to "about 2 minutes", hiding the disaster entirely.
+Buckets show both facts.
+
+### Picking one
+
+| You want to know... | Use |
+| --- | --- |
+| How many times did X happen? | Counter |
+| How much X is there right now? | Gauge |
+| What's a typical size or speed of X? | Histogram |
 
 ### The experiment: FleetDB is already emitting these
 
@@ -153,8 +240,8 @@ controller_runtime_active_workers{controller="backup"} 0
 `workqueue_depth` is the length of Chapter 2's work queue *right now*
 — a gauge, because it rises when events flood in and falls as workers
 drain it. Zero here means "fully caught up" (the scrape landed
-between reconciles). And the reconcile *duration* histogram, which
-shows how the bucket shape works:
+between reconciles). And here is the reconcile *duration* histogram
+from the sorting-tray section, live from your own cluster's scrape:
 
 ```text
 controller_runtime_reconcile_time_seconds_bucket{controller="backup",le="0.005"} 8
@@ -308,12 +395,13 @@ stands:
   format changes and your dashboard lies. Counters exist because
   counting must be cheap and permanent; logs are neither.
 - **High-cardinality labels.** It's tempting to label a metric
-  `tenant="acme"` — and with ten tenants, fine. With ten thousand,
-  every new tenant multiplies every time series containing that
-  label, and the metrics system drowns. The dividing rule you'll
-  use in Chapter 6: *identity belongs in logs, category belongs in
-  metrics* — `controller="backup"` is a category (handful of
-  values), `tenant="acme"` is an identity (unbounded).
+  `tenant="acme"` — and with ten tenants, fine. But every new tenant
+  adds another full copy of *every* number that carries the label.
+  Ten thousand tenants means ten thousand copies of everything. The
+  rule you'll use in Chapter 6: *identity belongs in logs, category
+  belongs in metrics* — `controller="backup"` is a category (a
+  short list that never grows), `tenant="acme"` is an identity (an
+  ever-growing list).
 
 ## How this differs from Kubebuilder
 

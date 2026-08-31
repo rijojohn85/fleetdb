@@ -83,6 +83,7 @@ func (b *BackupReconciler) reconcileBackupCronJob(ctx context.Context, tenant *v
 	})
 	if operation == controllerutil.OperationResultCreated {
 		b.Recorder.Event(tenant, corev1.EventTypeNormal, constants.BackupScheduledReason, "Scheduled database backups at "+tenant.Spec.BackupSchedule)
+		fleetDBBackupsScheduled.Inc()
 	}
 	return err
 }

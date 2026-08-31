@@ -54,6 +54,14 @@ but write to the profile above.) Before finalizing any chapter, verify:
 - Every snippet compiles as printed; all variables are declared; the
   first occurrence of any repeated pattern (e.g. a test spec shape) is
   shown in full before later copies elide it.
+- Write in very simple English. Short sentences, everyday words, one
+  idea per sentence. After writing any explanation, re-read it as a
+  beginner who has never used the concept being taught (metrics,
+  conditions, requeues, whatever it is): would they follow it on one
+  read? Concrete analogies and worked examples beat compressed
+  abstractions. If a sentence needs re-reading, rewrite it. (Found in
+  a Chapter 6 review, 2026-08-31: the "counters count attempts, not
+  outcomes" paragraph was too dense for the reader profile.)
 - Keep every line inside a code fence ≤ 80 columns so nothing
   overflows the rendered mdBook code box: wrap function signatures,
   chained calls (`Expect(x).` / `To(...)`), struct literals, and long
@@ -103,11 +111,17 @@ but write to the profile above.) Before finalizing any chapter, verify:
 
 ## Current state
 
-- Written: introduction, ch00 (toolchain/OLM smoke test), ch01 (API +
-  scaffold), ch02 (reconciler). Everything else is a stub.
-- Next chapter: **ch03 — Status Conditions and Requeue Strategy** (user
-  is still verifying ch02; wait for their go-ahead).
-- ch03 must pick up ch02's deferred threads: nothing in
-  `PostgresTenant.status` yet, `ObservedGeneration` semantics,
-  `ctrl.Result` requeue strategy, and eventually the missing
-  `.Owns(...)` watch.
+- Written: introduction, ch00–ch06 (Phase 1 complete; Phase 2 started).
+- Next chapter: **ch07 — Logs in Practice**. Threads to pick up: what
+  to log and what never to log (credentials!), log levels in practice,
+  structured fields, where logs go once the operator runs on a real
+  cluster (`kubectl logs`, node rotation), and the
+  GinkgoWriter/stderr/`go test -v` capture lesson from ch05's
+  experiments.
+- ch04 delivered a second controller (BackupReconciler + CronJob);
+  ch05 is the concepts chapter with real scrape/log experiments; ch06
+  added `fleetdb_credentials_generated_total` and
+  `fleetdb_backups_scheduled_total` on `metrics.Registry`.
+- Standing threads: envtest RBAC not enforced (verify in ch18), real
+  backup durability deferred, `.Owns` recreate = new Secret password
+  (rotation is a later chapter), typo'd schedule rejection → ch15.

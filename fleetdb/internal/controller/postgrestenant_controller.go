@@ -284,6 +284,7 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if created {
 			log.Info("secret created", "secret", resName)
 			r.Recorder.Event(&tenant, corev1.EventTypeNormal, constants.SecretCreatedReason, "Generated Database credentials")
+			fleetDBCredentialsGenerated.Inc()
 		}
 	}
 
