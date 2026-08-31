@@ -235,7 +235,8 @@ gains in this chapter is the fetch of the tenant and, one section at
 a time, a block per resource. Here's the frame:
 
 ```go
-func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PostgresTenantReconciler) Reconcile(ctx context.Context,
+	req ctrl.Request) (ctrl.Result, error) {
 	var tenant postgresv1alpha1.PostgresTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -398,7 +399,9 @@ generator `math/rand` provides.
 With those in place, the Secret builder:
 
 ```go
-func desiredSecret(tenant *postgresv1alpha1.PostgresTenant) (*corev1.Secret, error) {
+func desiredSecret(tenant *postgresv1alpha1.PostgresTenant) (
+	*corev1.Secret, error,
+) {
 	password, err := generatePassword()
 	if err != nil {
 		return nil, err
@@ -431,7 +434,9 @@ to look.
 and in `Reconcile`:
 
 ```go
-key := types.NamespacedName{Name: resourceName(&tenant), Namespace: tenant.Namespace}
+key := types.NamespacedName{
+	Name: resourceName(&tenant), Namespace: tenant.Namespace,
+}
 var existing corev1.Secret
 err := r.Get(ctx, key, &existing)
 if apierrors.IsNotFound(err) {
@@ -535,7 +540,9 @@ Fails the same way the Secret test did — `persistentvolumeclaims
 "widgets-postgres" not found` — and the fix is the same shape too:
 
 ```go
-func desiredPVC(tenant *postgresv1alpha1.PostgresTenant) *corev1.PersistentVolumeClaim {
+func desiredPVC(tenant *postgresv1alpha1.PostgresTenant) (
+	*corev1.PersistentVolumeClaim,
+) {
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName(tenant),
@@ -585,7 +592,9 @@ func (r *PostgresTenantReconciler) reconcileCreateOnce(
 	existing client.Object,
 	build func() (client.Object, error),
 ) error {
-	key := types.NamespacedName{Name: resourceName(tenant), Namespace: tenant.Namespace}
+	key := types.NamespacedName{
+		Name: resourceName(tenant), Namespace: tenant.Namespace,
+	}
 	err := r.Get(ctx, key, existing)
 	if err == nil {
 		return nil
@@ -608,15 +617,17 @@ func (r *PostgresTenantReconciler) reconcileCreateOnce(
 `Reconcile` now calls it once per resource:
 
 ```go
-if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{}, func() (client.Object, error) {
-	return desiredSecret(&tenant)
-}); err != nil {
+if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{},
+	func() (client.Object, error) {
+		return desiredSecret(&tenant)
+	}); err != nil {
 	return ctrl.Result{}, err
 }
 
-if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
-	return desiredPVC(&tenant), nil
-}); err != nil {
+if err := r.reconcileCreateOnce(ctx, &tenant,
+	&corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
+		return desiredPVC(&tenant), nil
+	}); err != nil {
 	return ctrl.Result{}, err
 }
 ```
@@ -668,7 +679,8 @@ It("creates a headless Service on the Postgres port", func() {
 		Name: "postgres", Port: 5432,
 		TargetPort: intstr.FromInt32(5432), Protocol: corev1.ProtocolTCP,
 	}))
-	Expect(svc.Spec.Selector).To(Equal(map[string]string{"postgrestenant": "gizmos"}))
+	Expect(svc.Spec.Selector).
+		To(Equal(map[string]string{"postgrestenant": "gizmos"}))
 })
 ```
 
@@ -745,7 +757,8 @@ headless Service in the last section was the right call — the two
 designs are a matched pair, as you're about to see in the assertions.
 
 ```go
-It("creates a single-replica StatefulSet running the requested Postgres version", func() {
+It("creates a single-replica StatefulSet with the requested Postgres version",
+	func() {
 	tenant := &postgresv1alpha1.PostgresTenant{
 		ObjectMeta: metav1.ObjectMeta{Name: "sprockets", Namespace: "default"},
 		Spec: postgresv1alpha1.PostgresTenantSpec{
@@ -765,11 +778,15 @@ It("creates a single-replica StatefulSet running the requested Postgres version"
 
 	Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
 	Expect(sts.Spec.ServiceName).To(Equal("sprockets-postgres"))
-	Expect(sts.Spec.Selector.MatchLabels).To(Equal(map[string]string{"postgrestenant": "sprockets"}))
+	Expect(sts.Spec.Selector.MatchLabels).
+		To(Equal(map[string]string{"postgrestenant": "sprockets"}))
 	Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("postgres:15"))
-	Expect(sts.Spec.Template.Spec.Containers[0].EnvFrom[0].SecretRef.Name).To(Equal("sprockets-postgres"))
-	Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
-	Expect(sts.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).To(Equal("sprockets-postgres"))
+	Expect(sts.Spec.Template.Spec.Containers[0].EnvFrom[0].SecretRef.Name).
+		To(Equal("sprockets-postgres"))
+	Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).
+		To(Equal("/var/lib/postgresql/data"))
+	Expect(sts.Spec.Template.Spec.Volumes[0].PersistentVolumeClaim.ClaimName).
+		To(Equal("sprockets-postgres"))
 })
 ```
 
@@ -801,7 +818,8 @@ Then a second `It`, written before any StatefulSet code exists at all,
 that pins down behavior create-once *can't* give us:
 
 ```go
-It("updates an existing StatefulSet's image when postgresVersion changes", func() {
+It("updates an existing StatefulSet's image when postgresVersion changes",
+	func() {
 	tenant := &postgresv1alpha1.PostgresTenant{
 		ObjectMeta: metav1.ObjectMeta{Name: "cogs", Namespace: "default"},
 		Spec: postgresv1alpha1.PostgresTenantSpec{
@@ -823,7 +841,9 @@ It("updates an existing StatefulSet's image when postgresVersion changes", func(
 	}, timeout, interval).Should(Equal("postgres:15"))
 
 	Eventually(func() error {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "cogs", Namespace: "default"}, tenant); err != nil {
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name: "cogs", Namespace: "default",
+			}, tenant); err != nil {
 			return err
 		}
 		tenant.Spec.PostgresVersion = "16"
@@ -874,7 +894,8 @@ alongside the other builders, and `reconcileStatefulSet` goes in
 complete listing at the end of this chapter shows exactly where):
 
 ```go
-func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.PostgresTenant) {
+func applyStatefulSetSpec(sts *appsv1.StatefulSet,
+	tenant *postgresv1alpha1.PostgresTenant) {
 	replicas := int32(1)
 	labels := selectorLabels(tenant)
 
@@ -887,10 +908,14 @@ func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.Post
 		Image: "postgres:" + tenant.Spec.PostgresVersion,
 		EnvFrom: []corev1.EnvFromSource{{
 			SecretRef: &corev1.SecretEnvSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: resourceName(tenant)},
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: resourceName(tenant),
+				},
 			},
 		}},
-		VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/var/lib/postgresql/data"}},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: "data", MountPath: "/var/lib/postgresql/data"},
+		},
 	}}
 	sts.Spec.Template.Spec.Volumes = []corev1.Volume{{
 		Name: "data",
@@ -902,9 +927,14 @@ func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.Post
 	}}
 }
 
-func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant) error {
+func (r *PostgresTenantReconciler) reconcileStatefulSet(
+	ctx context.Context, tenant *postgresv1alpha1.PostgresTenant,
+) error {
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: resourceName(tenant), Namespace: tenant.Namespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName(tenant),
+			Namespace: tenant.Namespace,
+		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		applyStatefulSetSpec(sts, tenant)
@@ -946,7 +976,8 @@ whole thing in one piece, exactly as it stands at the commit
 checkpoint:
 
 ```go
-func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PostgresTenantReconciler) Reconcile(ctx context.Context,
+	req ctrl.Request) (ctrl.Result, error) {
 	var tenant postgresv1alpha1.PostgresTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -955,21 +986,24 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{}, func() (client.Object, error) {
-		return desiredSecret(&tenant)
-	}); err != nil {
+	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{},
+		func() (client.Object, error) {
+			return desiredSecret(&tenant)
+		}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
-		return desiredPVC(&tenant), nil
-	}); err != nil {
+	if err := r.reconcileCreateOnce(ctx, &tenant,
+		&corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
+			return desiredPVC(&tenant), nil
+		}); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Service{}, func() (client.Object, error) {
-		return desiredService(&tenant), nil
-	}); err != nil {
+	if err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Service{},
+		func() (client.Object, error) {
+			return desiredService(&tenant), nil
+		}); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1025,13 +1059,15 @@ fleetdb/
 ├── api/v1alpha1/          # unchanged since Chapter 1
 ├── internal/controller/
 │   ├── postgrestenant_controller.go     # Reconcile, reconcileCreateOnce,
-│   │                                     # reconcileStatefulSet, SetupWithManager
+│   │                                     # reconcileStatefulSet,
+│   │                                     # SetupWithManager
 │   ├── postgrestenant_resources.go      # desiredSecret, desiredPVC,
-│   │                                     # desiredService, applyStatefulSetSpec,
+│   │                                     # desiredService,
+│   │                                     # applyStatefulSetSpec,
 │   │                                     # resourceName, selectorLabels
 │   ├── postgrestenant_api_test.go       # Chapter 1's validation tests
 │   ├── postgrestenant_controller_test.go # this chapter's 5 specs
-│   └── suite_test.go                     # now starts a real manager + reconciler
+│   └── suite_test.go                     # now starts a real manager
 └── config/                # unchanged since Chapter 1
 ```
 

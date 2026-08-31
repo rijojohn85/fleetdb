@@ -269,7 +269,9 @@ var _ = BeforeSuite(func() {
 	ctx, cancel = context.WithCancel(context.TODO())
 
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths: []string{
+			filepath.Join("..", "..", "config", "crd", "bases"),
+		},
 		ErrorIfCRDPathMissing: true,
 	}
 
@@ -428,7 +430,8 @@ var _ = Describe("PostgresTenant API validation", func() {
 		Expect(err).To(HaveOccurred())
 	})
 
-	It("accepts a valid PostgresTenant and defaults postgresVersion to 16", func() {
+	It("accepts a valid PostgresTenant and defaults postgresVersion",
+		func() {
 		tenant := &postgresv1alpha1.PostgresTenant{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "acme-prod",
@@ -599,8 +602,8 @@ fleetdb/
 │   └── zz_generated.deepcopy.go
 ├── internal/controller/
 │   ├── postgrestenant_controller.go   # still an empty stub — Chapter 2
-│   ├── postgrestenant_api_test.go     # the 4 validation cases from this chapter
-│   └── suite_test.go                  # scaffolded postgrestenant_controller_test.go deleted — see above
+│   ├── postgrestenant_api_test.go     # the 4 validation cases
+│   └── suite_test.go                  # controller test deleted — see above
 └── config/
     ├── crd/bases/postgres.fleetdb.io_postgrestenants.yaml
     ├── manifests/                     # present, empty of real content

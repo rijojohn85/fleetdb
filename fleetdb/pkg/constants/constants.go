@@ -2,9 +2,22 @@
 package constants
 
 const (
-	POSTGRES_USER_VALUE   = "postgres"
-	POSTGRES_USER_KEY     = "POSTGRES_USER"
-	POSTGRES_PASSWORD_KEY = "POSTGRES_PASSWORD"
-	POSTGRES_DB_KEY       = "POSTGRES_DB"
-	SELECTOR_LABEL_KEY    = "postgrestenant"
+	PostgresUserValue        = "postgres"
+	PostgresUserKey          = "POSTGRES_USER"
+	PostgresPasswordKey      = "POSTGRES_PASSWORD"
+	PostgresDBKey            = "POSTGRES_DB"
+	SelectorLabelKey         = "postgrestenant"
+	ConditionReady           = "Ready"
+	SecretCreatedReason      = "SecretCreated"
+	StatefulSetCreatedReason = "StatefulSetCreated"
+	StatefulSetUpdatedReason = "StatefulSetUpdated"
+	ServiceCreatedReason     = "ServiceCreated"
+	PVCCreatedReason         = "PVCCreated"
+	TenantReadyReason        = "TenantReady"
+	TenantNotReadyReason     = "TenantNotReady"
+	BackupScheduledReason    = "BackupScheduled"
+	PGHostEnv                = "PGHOST"
+	PGDatabaseEnv            = "PGDATABASE"
+	PGUserEnv                = "PGUSER"
+	PGPasswordEnv            = "PGPASSWORD"
 )

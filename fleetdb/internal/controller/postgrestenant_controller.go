@@ -21,11 +21,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -35,13 +37,15 @@ import (
 	"github.com/rijojohn85/fleetdb/pkg/constants"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // PostgresTenantReconciler reconciles a PostgresTenant object
 type PostgresTenantReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // resourceNmae is the name every owned resource for a tenant shares
@@ -70,9 +74,9 @@ func desiredSecret(tenant *postgresv1alpha1.PostgresTenant) (*corev1.Secret, err
 			Namespace: tenant.Namespace,
 		},
 		StringData: map[string]string{
-			constants.POSTGRES_USER_KEY:     constants.POSTGRES_USER_VALUE,
-			constants.POSTGRES_PASSWORD_KEY: password,
-			constants.POSTGRES_DB_KEY:       tenant.Spec.DatabaseName,
+			constants.PostgresUserKey:     constants.PostgresUserValue,
+			constants.PostgresPasswordKey: password,
+			constants.PostgresDBKey:       tenant.Spec.DatabaseName,
 		},
 	}, nil
 }
@@ -99,7 +103,7 @@ func desiredPVC(tenant *postgresv1alpha1.PostgresTenant) *corev1.PersistentVolum
 }
 
 func selectorLabels(tenant *postgresv1alpha1.PostgresTenant) map[string]string {
-	return map[string]string{constants.SELECTOR_LABEL_KEY: tenant.Name}
+	return map[string]string{constants.SelectorLabelKey: tenant.Name}
 }
 
 func desiredService(tenant *postgresv1alpha1.PostgresTenant) *corev1.Service {
@@ -179,7 +183,7 @@ func applyStatefulSetSpec(sts *appsv1.StatefulSet, tenant *postgresv1alpha1.Post
 	}
 }
 
-func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant) error {
+func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant) (*appsv1.StatefulSet, error) {
 	sts := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      resourceName(tenant),
@@ -187,11 +191,55 @@ func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, ten
 		},
 	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+	operation, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		applyStatefulSetSpec(sts, tenant)
 		return ctrl.SetControllerReference(tenant, sts, r.Scheme)
 	})
-	return err
+	switch operation {
+	case controllerutil.OperationResultCreated:
+		r.Recorder.Event(tenant, corev1.EventTypeNormal, constants.StatefulSetCreatedReason, "Created the PG stateful set")
+	case controllerutil.OperationResultUpdated:
+		r.Recorder.Event(tenant, corev1.EventTypeNormal, constants.StatefulSetUpdatedReason, "Updated the PG stateful set")
+	}
+	return sts, err
+}
+
+// stsReady reports whether the StatefulSet has every replica it wants
+// actually running and ready
+func stsReady(sts *appsv1.StatefulSet) bool {
+	return sts.Status.ReadyReplicas == *sts.Spec.Replicas
+}
+
+func (r *PostgresTenantReconciler) updateStatus(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant, sts *appsv1.StatefulSet) error {
+	condition := metav1.Condition{
+		Type:               constants.ConditionReady,
+		ObservedGeneration: tenant.Generation,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Provisioning",
+		Message:            "Waiting for the postgrs replica to become ready",
+	}
+	if stsReady(sts) {
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "Ready"
+		condition.Message = "Postgres replica is ready"
+	}
+	prev := meta.FindStatusCondition(tenant.Status.Conditions, constants.ConditionReady)
+	wasReady := prev != nil && prev.Status == metav1.ConditionTrue
+	changed := meta.SetStatusCondition(&tenant.Status.Conditions, condition)
+	if tenant.Status.ObservedGeneration != tenant.Generation {
+		tenant.Status.ObservedGeneration = tenant.Generation
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	switch {
+	case condition.Status == metav1.ConditionTrue && !wasReady:
+		r.Recorder.Event(tenant, corev1.EventTypeNormal, constants.TenantReadyReason, condition.Message)
+	case condition.Status == metav1.ConditionFalse && wasReady:
+		r.Recorder.Event(tenant, corev1.EventTypeWarning, constants.TenantNotReadyReason, condition.Message)
+	}
+	return r.Status().Update(ctx, tenant)
 }
 
 // +kubebuilder:rbac:groups=postgres.rijojohn.xyz,resources=postgrestenants,verbs=get;list;watch;create;update;patch;delete
@@ -235,6 +283,7 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	} else {
 		if created {
 			log.Info("secret created", "secret", resName)
+			r.Recorder.Event(&tenant, corev1.EventTypeNormal, constants.SecretCreatedReason, "Generated Database credentials")
 		}
 	}
 
@@ -247,6 +296,7 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	} else {
 		if created {
 			log.Info("pvc created", "pvc", resName)
+			r.Recorder.Event(&tenant, corev1.EventTypeNormal, constants.PVCCreatedReason, "PVC created")
 		}
 	}
 
@@ -259,15 +309,24 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	} else {
 		if created {
 			log.Info("service create", "service", resName)
+			r.Recorder.Event(&tenant, corev1.EventTypeNormal, constants.ServiceCreatedReason, "Service created")
 		}
 	}
 
-	err := r.reconcileStatefulSet(ctx, &tenant)
+	sts, err := r.reconcileStatefulSet(ctx, &tenant)
 	if err != nil {
 		log.Error(err, "error reconciling statefulset")
 		return ctrl.Result{}, err
 	}
 
+	if err := r.updateStatus(ctx, &tenant, sts); err != nil {
+		log.Error(err, "failed to updateStatus")
+		return ctrl.Result{}, err
+	}
+	if !stsReady(sts) {
+		log.Info("statefulset not ready, requeuing...", "statefulset", sts)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
 	log.Info("succesfully reconciled tenant")
 	return ctrl.Result{}, nil
 }
@@ -301,6 +360,10 @@ func (r *PostgresTenantReconciler) reconcileCreateOnce(
 func (r *PostgresTenantReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&postgresv1alpha1.PostgresTenant{}).
+		Owns(&appsv1.StatefulSet{}).
+		Owns(&corev1.Secret{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.PersistentVolumeClaim{}).Owns(&appsv1.StatefulSet{}).
 		Named("postgrestenant").
 		Complete(r)
 }

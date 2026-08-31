@@ -9,13 +9,15 @@ import (
 	"github.com/rijojohn85/fleetdb/pkg/constants"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
-	timeout  = time.Second * 30
+	timeout  = time.Second * 5
 	interval = time.Millisecond * 500
 )
 
@@ -75,7 +77,7 @@ var _ = Describe("PostgresTenant reconciller tests", func() {
 
 		Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
 		Expect(sts.Spec.ServiceName).To(Equal("sprockets-postgres"))
-		Expect(sts.Spec.Selector.MatchLabels).To(Equal(map[string]string{constants.SELECTOR_LABEL_KEY: "sprockets"}))
+		Expect(sts.Spec.Selector.MatchLabels).To(Equal(map[string]string{constants.SelectorLabelKey: "sprockets"}))
 		Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("postgres:15"))
 		Expect(sts.Spec.Template.Spec.Containers[0].EnvFrom[0].SecretRef.Name).To(Equal("sprockets-postgres"))
 		Expect(sts.Spec.Template.Spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/var/lib/postgresql/data"))
@@ -119,5 +121,108 @@ var _ = Describe("PostgresTenant reconciller tests", func() {
 			}
 			return sts.Spec.Template.Spec.Containers[0].Image
 		}, timeout, interval).Should(Equal("postgres:16"))
+	})
+
+	It("reports Ready=False while the StatefulSet is starting", func() {
+		tenant := createTenant("bolts", "default", "1Gi")
+		Expect(k8sClient.Create(ctx, &tenant)).To(Succeed())
+
+		Eventually(func() string {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, &tenant); err != nil {
+				return ""
+			}
+			cond := meta.FindStatusCondition(tenant.Status.Conditions, constants.ConditionReady)
+			if cond == nil {
+				return ""
+			}
+			return string(cond.Status)
+		}, timeout, interval).Should(Equal("False"))
+		Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, &tenant); err != nil {
+				return err
+			}
+			tenant.Spec.PostgresVersion = "17"
+			return k8sClient.Update(ctx, &tenant)
+		}, timeout, interval).Should(Succeed())
+
+		Eventually(func() int64 {
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, &tenant); err != nil {
+				return 0
+			}
+			return tenant.Status.ObservedGeneration
+		})
+	})
+
+	It("reports Ready=True once the StatefulSet reports a ready replica", func() {
+		tenant := createTenant("hammers", "default", "1Gi")
+		Expect(k8sClient.Create(ctx, &tenant)).To(Succeed())
+		sts := &appsv1.StatefulSet{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, types.NamespacedName{Name: "hammers-postgres", Namespace: "default"}, sts)
+		}, timeout, interval).Should(Succeed())
+		Eventually(func() error {
+			if err := k8sClient.Get(ctx, namespaceName("hammers-postgres", "default"), sts); err != nil {
+				return err
+			}
+			sts.Status.Replicas = 1
+			sts.Status.ReadyReplicas = 1
+			return k8sClient.Status().Update(ctx, sts)
+		}, timeout, interval).Should(Succeed())
+
+		Eventually(func() string {
+			if err := k8sClient.Get(ctx, namespaceName("hammers", "default"), &tenant); err != nil {
+				return ""
+			}
+			cond := meta.FindStatusCondition(tenant.Status.Conditions, constants.ConditionReady)
+			if cond == nil {
+				return ""
+			}
+			return string(cond.Status)
+		}, timeout, interval).Should(Equal("True"))
+		events := &corev1.EventList{}
+		Eventually(func() bool {
+			if err := k8sClient.List(ctx, events, client.InNamespace("default")); err != nil {
+				return false
+			}
+			for _, ev := range events.Items {
+				if ev.InvolvedObject.Name == "hammers" && ev.Reason == "TenantReady" {
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue())
+	})
+	It("recreates The Service if someone deletes it", func() {
+		tenant := createTenant("screws", "default", "1Gi")
+		Expect(k8sClient.Create(ctx, &tenant)).To(Succeed())
+
+		svc := &corev1.Service{}
+		Eventually(func() error {
+			return k8sClient.Get(ctx, namespaceName("screws-postgres", "default"), svc)
+		}, timeout, interval).Should(Succeed())
+		Expect(k8sClient.Delete(ctx, svc)).To(Succeed())
+
+		Eventually(func() error {
+			return k8sClient.Get(ctx, namespaceName("screws-postgres", "default"), &corev1.Service{})
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("recors an event when it creates the Secret", func() {
+		tenant := createTenant("nuts", "default", "1Gi")
+		Expect(k8sClient.Create(ctx, &tenant)).To(Succeed())
+		events := &corev1.EventList{}
+
+		Eventually(func() bool {
+			if err := k8sClient.List(ctx, events, client.InNamespace("default")); err != nil {
+				return false
+			}
+			for _, ev := range events.Items {
+				if ev.InvolvedObject.Name == "nuts" && ev.Reason == constants.SecretCreatedReason {
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue())
 	})
 })

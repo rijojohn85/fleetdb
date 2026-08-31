@@ -45,6 +45,11 @@ type PostgresTenantSpec struct {
 	// +kubebuilder:default="16"
 	// +optional
 	PostgresVersion string `json:"postgresVersion,omitempty"`
+
+	// BackupSchedule is a cron expression (eg "0 3 * * *") for when to
+	// back the database up. Empty means backups are not requested.
+	// +optional
+	BackupSchedule string `json:"backupSchedule,omitempty"`
 }
 
 // PostgresTenantStatus defines the observed state of PostgresTenant.
@@ -52,6 +57,11 @@ type PostgresTenantStatus struct {
 	// ObservedGeneration is the most recently
 	// reconciled generation of this PostgresTenant's Spec
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// Conditions is the set of conditions reporte by the controller.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
 // +kubebuilder:object:root=true

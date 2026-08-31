@@ -92,7 +92,9 @@ It("reports Ready=False while the StatefulSet is starting", func() {
 	Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 
 	Eventually(func() string {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, tenant); err != nil {
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "bolts", Namespace: "default",
+		}, tenant); err != nil {
 			return ""
 		}
 		cond := meta.FindStatusCondition(tenant.Status.Conditions, "Ready")
@@ -105,7 +107,9 @@ It("reports Ready=False while the StatefulSet is starting", func() {
 	Expect(tenant.Status.ObservedGeneration).To(Equal(tenant.Generation))
 
 	Eventually(func() error {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, tenant); err != nil {
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "bolts", Namespace: "default",
+		}, tenant); err != nil {
 			return err
 		}
 		tenant.Spec.PostgresVersion = "17"
@@ -113,7 +117,9 @@ It("reports Ready=False while the StatefulSet is starting", func() {
 	}, timeout, interval).Should(Succeed())
 
 	Eventually(func() int64 {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "bolts", Namespace: "default"}, tenant); err != nil {
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "bolts", Namespace: "default",
+		}, tenant); err != nil {
 			return 0
 		}
 		return tenant.Status.ObservedGeneration
@@ -213,9 +219,14 @@ so the signature changes. Two small functions go in
 `postgrestenant_controller.go` next to it:
 
 ```go
-func (r *PostgresTenantReconciler) reconcileStatefulSet(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant) (*appsv1.StatefulSet, error) {
+func (r *PostgresTenantReconciler) reconcileStatefulSet(
+	ctx context.Context, tenant *postgresv1alpha1.PostgresTenant,
+) (*appsv1.StatefulSet, error) {
 	sts := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{Name: resourceName(tenant), Namespace: tenant.Namespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      resourceName(tenant),
+			Namespace: tenant.Namespace,
+		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
 		applyStatefulSetSpec(sts, tenant)
@@ -240,7 +251,10 @@ readiness signal.
 And the function that does the actual reporting:
 
 ```go
-func (r *PostgresTenantReconciler) updateStatus(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant, sts *appsv1.StatefulSet) error {
+func (r *PostgresTenantReconciler) updateStatus(
+	ctx context.Context, tenant *postgresv1alpha1.PostgresTenant,
+	sts *appsv1.StatefulSet,
+) error {
 	condition := metav1.Condition{
 		Type:               "Ready",
 		ObservedGeneration: tenant.Generation,
@@ -485,7 +499,9 @@ It("reports Ready=True once the StatefulSet reports a ready replica", func() {
 	}, timeout, interval).Should(Succeed())
 
 	Eventually(func() string {
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: "hammers", Namespace: "default"}, tenant); err != nil {
+		if err := k8sClient.Get(ctx, types.NamespacedName{
+			Name: "hammers", Namespace: "default",
+		}, tenant); err != nil {
 			return ""
 		}
 		cond := meta.FindStatusCondition(tenant.Status.Conditions, "Ready")
@@ -497,7 +513,8 @@ It("reports Ready=True once the StatefulSet reports a ready replica", func() {
 
 	events := &corev1.EventList{}
 	Eventually(func() bool {
-		if err := k8sClient.List(ctx, events, client.InNamespace("default")); err != nil {
+			if err := k8sClient.List(ctx, events,
+				client.InNamespace("default")); err != nil {
 			return false
 		}
 		for _, ev := range events.Items {
@@ -683,7 +700,8 @@ The mechanism is one interface, `record.EventRecorder` from
 `k8s.io/client-go/tools/record`, with one method you'll use:
 
 ```go
-r.Recorder.Event(&tenant, corev1.EventTypeNormal, "SecretCreated", "Generated database credentials")
+r.Recorder.Event(&tenant, corev1.EventTypeNormal,
+	"SecretCreated", "Generated database credentials")
 ```
 
 The four arguments: the object the event attaches to (the tenant —
@@ -729,7 +747,8 @@ It("records an event when it creates the Secret", func() {
 
 	events := &corev1.EventList{}
 	Eventually(func() bool {
-		if err := k8sClient.List(ctx, events, client.InNamespace("default")); err != nil {
+			if err := k8sClient.List(ctx, events,
+				client.InNamespace("default")); err != nil {
 			return false
 		}
 		for _, ev := range events.Items {
@@ -804,7 +823,8 @@ site, using `mgr` instead of `k8sManager`:
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("postgrestenant"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PostgresTenant")
+		setupLog.Error(err, "unable to create controller",
+			"controller", "PostgresTenant")
 		os.Exit(1)
 	}
 ```
@@ -821,7 +841,9 @@ func (r *PostgresTenantReconciler) reconcileCreateOnce(
 	existing client.Object,
 	build func() (client.Object, error),
 ) (bool, error) {
-	key := types.NamespacedName{Name: resourceName(tenant), Namespace: tenant.Namespace}
+	key := types.NamespacedName{
+		Name: resourceName(tenant), Namespace: tenant.Namespace,
+	}
 	err := r.Get(ctx, key, existing)
 	if err == nil {
 		return false, nil
@@ -848,14 +870,16 @@ reason and message, and all three appear in the complete listing
 below):
 
 ```go
-	created, err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{}, func() (client.Object, error) {
-		return desiredSecret(&tenant)
-	})
+	created, err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{},
+		func() (client.Object, error) {
+			return desiredSecret(&tenant)
+		})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if created {
-		r.Recorder.Event(&tenant, corev1.EventTypeNormal, "SecretCreated", "Generated database credentials")
+		r.Recorder.Event(&tenant, corev1.EventTypeNormal,
+			"SecretCreated", "Generated database credentials")
 	}
 ```
 
@@ -864,15 +888,18 @@ already returns — created and updated are both worth an event (the
 update one is what a version change like the `cogs` test triggers):
 
 ```go
-	operation, err := controllerutil.CreateOrUpdate(ctx, r.Client, sts, func() error {
+	operation, err := controllerutil.CreateOrUpdate(
+		ctx, r.Client, sts, func() error {
 		applyStatefulSetSpec(sts, tenant)
 		return ctrl.SetControllerReference(tenant, sts, r.Scheme)
 	})
 	switch operation {
 	case controllerutil.OperationResultCreated:
-		r.Recorder.Event(tenant, corev1.EventTypeNormal, "StatefulSetCreated", "Created the Postgres StatefulSet")
+		r.Recorder.Event(tenant, corev1.EventTypeNormal,
+			"StatefulSetCreated", "Created the Postgres StatefulSet")
 	case controllerutil.OperationResultUpdated:
-		r.Recorder.Event(tenant, corev1.EventTypeNormal, "StatefulSetUpdated", "Updated the Postgres StatefulSet")
+		r.Recorder.Event(tenant, corev1.EventTypeNormal,
+			"StatefulSetUpdated", "Updated the Postgres StatefulSet")
 	}
 ```
 
@@ -882,7 +909,10 @@ It needs the previous state, so a lookup joins the top of the
 function (this is the complete final version):
 
 ```go
-func (r *PostgresTenantReconciler) updateStatus(ctx context.Context, tenant *postgresv1alpha1.PostgresTenant, sts *appsv1.StatefulSet) error {
+func (r *PostgresTenantReconciler) updateStatus(
+	ctx context.Context, tenant *postgresv1alpha1.PostgresTenant,
+	sts *appsv1.StatefulSet,
+) error {
 	condition := metav1.Condition{
 		Type:               "Ready",
 		ObservedGeneration: tenant.Generation,
@@ -910,9 +940,11 @@ func (r *PostgresTenantReconciler) updateStatus(ctx context.Context, tenant *pos
 
 	switch {
 	case condition.Status == metav1.ConditionTrue && !wasReady:
-		r.Recorder.Event(tenant, corev1.EventTypeNormal, "TenantReady", condition.Message)
+		r.Recorder.Event(tenant, corev1.EventTypeNormal,
+			"TenantReady", condition.Message)
 	case condition.Status == metav1.ConditionFalse && wasReady:
-		r.Recorder.Event(tenant, corev1.EventTypeWarning, "TenantNotReady", condition.Message)
+		r.Recorder.Event(tenant, corev1.EventTypeWarning,
+			"TenantNotReady", condition.Message)
 	}
 
 	return r.Status().Update(ctx, tenant)
@@ -941,7 +973,8 @@ The chapter changed `Reconcile`'s middle and tail; here is the whole
 function as it stands at the commit checkpoint:
 
 ```go
-func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PostgresTenantReconciler) Reconcile(ctx context.Context,
+	req ctrl.Request) (ctrl.Result, error) {
 	var tenant postgresv1alpha1.PostgresTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -950,34 +983,40 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	created, err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{}, func() (client.Object, error) {
-		return desiredSecret(&tenant)
-	})
+	created, err := r.reconcileCreateOnce(ctx, &tenant, &corev1.Secret{},
+		func() (client.Object, error) {
+			return desiredSecret(&tenant)
+		})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if created {
-		r.Recorder.Event(&tenant, corev1.EventTypeNormal, "SecretCreated", "Generated database credentials")
+		r.Recorder.Event(&tenant, corev1.EventTypeNormal,
+			"SecretCreated", "Generated database credentials")
 	}
 
-	created, err = r.reconcileCreateOnce(ctx, &tenant, &corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
-		return desiredPVC(&tenant), nil
-	})
+	created, err = r.reconcileCreateOnce(ctx, &tenant,
+		&corev1.PersistentVolumeClaim{}, func() (client.Object, error) {
+			return desiredPVC(&tenant), nil
+		})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if created {
-		r.Recorder.Event(&tenant, corev1.EventTypeNormal, "PersistentVolumeClaimCreated", "Requested storage for the database")
+		r.Recorder.Event(&tenant, corev1.EventTypeNormal,
+			"PersistentVolumeClaimCreated", "Requested storage for the database")
 	}
 
-	created, err = r.reconcileCreateOnce(ctx, &tenant, &corev1.Service{}, func() (client.Object, error) {
-		return desiredService(&tenant), nil
-	})
+	created, err = r.reconcileCreateOnce(ctx, &tenant, &corev1.Service{},
+		func() (client.Object, error) {
+			return desiredService(&tenant), nil
+		})
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if created {
-		r.Recorder.Event(&tenant, corev1.EventTypeNormal, "ServiceCreated", "Created the headless database Service")
+		r.Recorder.Event(&tenant, corev1.EventTypeNormal,
+			"ServiceCreated", "Created the headless database Service")
 	}
 
 	sts, err := r.reconcileStatefulSet(ctx, &tenant)
@@ -1066,19 +1105,19 @@ the `Ready` convention isn't optional.)
 ```
 fleetdb/
 ├── api/v1alpha1/
-│   ├── postgrestenant_types.go        # status gains Conditions []metav1.Condition
+│   ├── postgrestenant_types.go        # status gains Conditions
 │   └── zz_generated.deepcopy.go       # regenerated (make generate)
 ├── cmd/
 │   └── main.go                        # Recorder: mgr.GetEventRecorderFor(...)
-├── config/crd/bases/                  # CRD regenerated with conditions (make manifests)
+├── config/crd/bases/                   # CRD regenerated (conditions)
 ├── internal/controller/
 │   ├── postgrestenant_controller.go   # updateStatus, stsReady, Recorder field,
 │   │                                  # Owns watches, events, RequeueAfter
 │   ├── postgrestenant_resources.go    # unchanged from Chapter 2
 │   ├── postgrestenant_api_test.go     # Chapter 1's validation tests
 │   ├── postgrestenant_controller_test.go  # 9 controller specs
-│   └── suite_test.go                  # Recorder: k8sManager.GetEventRecorderFor(...)
-└── config/                            # (crd regenerated; rbac will regenerate too)
+│   └── suite_test.go                  # Recorder: GetEventRecorderFor(...)
+└── config/                            # (crd + rbac regenerated)
 ```
 
 `make test` passes: 13 specs (9 controller, 4 API), 86.0% coverage,

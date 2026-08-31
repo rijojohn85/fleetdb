@@ -149,7 +149,7 @@ fleet-db/
 │       ├── ch00_toolchain_and_olm.md
 │       ├── phase0-smoke-test.log
 │       └── ch01_...ch19_...md     # stubs, filled in as we go
-├── fleetdb/                       # empty — FleetDB's Go module starts in Chapter 1
+├── fleetdb/                  # empty — the Go module starts in Chapter 1
 └── fleetdb-operator-sdk-book-prompt.md
 ```
 

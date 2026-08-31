@@ -54,6 +54,14 @@ but write to the profile above.) Before finalizing any chapter, verify:
 - Every snippet compiles as printed; all variables are declared; the
   first occurrence of any repeated pattern (e.g. a test spec shape) is
   shown in full before later copies elide it.
+- Keep every line inside a code fence ≤ 80 columns so nothing
+  overflows the rendered mdBook code box: wrap function signatures,
+  chained calls (`Expect(x).` / `To(...)`), struct literals, and long
+  `Get`/`Create` calls across lines. Exceptions that must stay long
+  because wrapping changes meaning: verbatim command output (test
+  runner logs, FAIL summaries), `+kubebuilder:rbac` marker comments,
+  and struct tags. Scan before finalizing a chapter, e.g.
+  `awk '/^```/{i=!i;next} i&&length>80{print FILENAME":"FNR}' chapter.md`.
 - Import blocks are given for implementation files, not just test files.
 - No latent bugs in illustrative code — check fragment logic against the
   whole function, not just whether tests would pass.
