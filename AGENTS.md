@@ -111,13 +111,11 @@ but write to the profile above.) Before finalizing any chapter, verify:
 
 ## Current state
 
-- Written: introduction, ch00–ch06 (Phase 1 complete; Phase 2 started).
-- Next chapter: **ch07 — Logs in Practice**. Threads to pick up: what
-  to log and what never to log (credentials!), log levels in practice,
-  structured fields, where logs go once the operator runs on a real
-  cluster (`kubectl logs`, node rotation), and the
-  GinkgoWriter/stderr/`go test -v` capture lesson from ch05's
-  experiments.
+- Written: introduction, ch00–ch07 (Phase 2 in progress).
+- Next chapter: **ch08 — Traces in Practice**. Picks up ch07's
+  closing thread: `reconcileID` correlates within one reconcile;
+  traces correlate across components (controller → API server →
+  CronJob pod).
 - ch04 delivered a second controller (BackupReconciler + CronJob);
   ch05 is the concepts chapter with real scrape/log experiments; ch06
   added `fleetdb_credentials_generated_total` and

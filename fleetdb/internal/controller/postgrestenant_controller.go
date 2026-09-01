@@ -261,7 +261,7 @@ func (r *PostgresTenantReconciler) updateStatus(ctx context.Context, tenant *pos
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx).WithValues("Name", req.Name, "Namespace", req.Namespace)
-	log.Info("starting reconciliation")
+	log.V(1).Info("starting reconciliation")
 
 	var tenant postgresv1alpha1.PostgresTenant
 	if err := r.Get(ctx, req.NamespacedName, &tenant); err != nil {
@@ -325,7 +325,7 @@ func (r *PostgresTenantReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !stsReady(sts) {
-		log.Info("statefulset not ready, requeuing...", "statefulset", sts)
+		log.V(1).Info("statefulset not ready, requeuing...", "statefulset", sts)
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 	log.Info("succesfully reconciled tenant")
